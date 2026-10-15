@@ -82,6 +82,36 @@
         <div class="stat emphasis"><div class="stat-label">전세 보증금 중앙값 <span class="info-tip" title="현재 필터에 해당하는 전세 거래의 보증금 중앙값입니다. 동일 단지·면적의 시세를 뜻하지는 않습니다.">ⓘ</span></div><div class="stat-number" id="stat-median">—</div><div class="stat-foot">단위: 만원 · 면적 혼합 시 주의</div></div>
       </section>
 
+      <section class="panel map-panel" aria-labelledby="map-heading">
+        <div class="map-topbar"><div><div class="overline">LOCATION & ROUTE</div><h2 id="map-heading">지도 · 아파트별 이동거리 비교</h2><p>현장 주소를 기준으로 아파트 위치를 확인하고, 선택한 단지의 실제 도로·도보 경로를 조회합니다.</p></div><span class="map-info-badge">지도 연동 추가 기능</span></div>
+        <div class="map-search-bar">
+          <label class="field" for="base-address"><span>기준 위치 주소 <small>필수</small></span><input id="base-address" type="text" maxlength="140" placeholder="예: 서울특별시 강남구 테헤란로 152" autocomplete="street-address" /></label>
+          <button id="locate-button" type="button" class="button primary">⌖ 기준 주소 표시</button>
+          <button id="map-apts-button" type="button" class="button secondary" disabled>아파트 지도 표시</button>
+        </div>
+        <div class="map-feedback" id="map-feedback" role="status" aria-live="polite">① 기준 주소를 입력해 위치를 확인하고 ② 실거래 자료를 조회한 다음 ③ 아파트를 지도에 표시하세요.</div>
+        <div class="map-content">
+          <div class="map-stage">
+            <div id="apt-map" class="map-canvas" aria-label="기준 위치 및 아파트 지도">
+              <div class="map-placeholder"><div class="map-placeholder-icon">⌖</div><strong>기준 주소를 입력하면 지도가 표시됩니다</strong><p>카카오맵 JavaScript 키 등록 후 사용 가능합니다.</p></div>
+            </div>
+            <div class="map-legend"><span><i class="legend-dot base"></i> 기준 위치</span><span><i class="legend-dot home"></i> 비교 아파트</span><span>아파트 위치는 지번·단지명 검색 결과이며 확인이 필요할 수 있습니다.</span></div>
+          </div>
+          <aside class="map-sidebar">
+            <div class="sidebar-heading"><strong>조회 아파트</strong><span id="map-result-count">0개 단지</span></div>
+            <div id="map-apt-list" class="map-apt-list"><div class="list-empty">실거래가를 조회하면<br />아파트별 위치를 비교할 수 있습니다.</div></div>
+            <div class="route-detail" id="route-detail" hidden>
+              <div class="route-title"><strong id="route-name">선택한 아파트</strong><span id="route-quality"></span></div>
+              <p id="route-address" class="route-address"></p>
+              <div class="distance-grid"><div><span>직선거리</span><strong id="straight-distance">—</strong></div><div><span>차량 이동</span><strong id="drive-duration">—</strong><small id="drive-distance">경로 조회 전</small></div><div><span>도보 이동</span><strong id="walk-duration">—</strong><small id="walk-distance">경로 조회 전</small></div></div>
+              <div class="route-switch"><button type="button" class="button secondary small" id="show-drive-route">차량 경로 보기</button><button type="button" class="button secondary small" id="show-walk-route">도보 경로 보기</button></div>
+              <a id="external-map-link" class="external-map-link" target="_blank" rel="noopener noreferrer" href="https://map.kakao.com/">카카오맵에서 위치 열기 ↗</a>
+            </div>
+          </aside>
+        </div>
+        <p class="map-footnote">※ 직선거리와 실제 도로·보행 거리는 다릅니다. 예상 이동시간은 각 길찾기 API가 정상 응답한 경우에만 표시됩니다. 비용·호출한도를 고려하여 최대 20개 단지만 지도에 표시하고, 선택한 단지의 경로만 조회합니다.</p>
+      </section>
+
       <section class="panel results-panel" aria-labelledby="results-heading">
         <div class="results-heading"><div><div class="overline">TRANSACTIONS</div><h2 id="results-heading">전월세 실거래 상세 내역</h2><p id="results-subtitle" class="results-subtitle">조건을 선택하고 조회 버튼을 눌러주세요.</p></div><div class="result-actions"><button class="button secondary small" id="download-button" disabled>↓ CSV 다운로드</button></div></div>
         <div id="progress-area" class="progress-area" hidden><div class="progress-caption"><span id="progress-caption">조회 중…</span><span id="progress-count">0 / 0개월</span></div><div class="progress-track"><div id="progress-fill" class="progress-fill" style="width:0%"></div></div></div>

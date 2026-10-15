@@ -148,6 +148,7 @@ function updateFilters() {
   state.page = 1;
   updateStats();
   renderRows();
+  mapModule.invalidate();
   $('download-button').disabled = !state.filtered.length || state.loading;
 }
 function median(values) {
@@ -288,8 +289,244 @@ function exportCsv() {
   document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
+// Optional map extension: map features never change the official transaction data.
+const mapModule = (() => {
+  const m = { origin:null, properties:[], map:null, originMarker:null, markers:[], routeLine:null,
+    selected:null, route:null, token:0, sdkPromise:null, geocodeCache:new Map(), routeCache:new Map() };
+  const setInfo = (message, error=false) => {
+    $('map-feedback').textContent = message;
+    $('map-feedback').classList.toggle('error',error);
+  };
+  async function getJson(path) {
+    const response = await fetch(path);
+    let data;
+    try { data = await response.json(); } catch { throw new Error(`서버 응답이 JSON이 아닙니다 (${response.status}).`); }
+    if (!response.ok) throw new Error(data.error || `API 오류 ${response.status}`);
+    return data;
+  }
+  function distance(a,b) {
+    const rad = n=>n*Math.PI/180;
+    const R = 6371000;
+    const deltaLat = rad(b.lat-a.lat), deltaLng = rad(b.lng-a.lng);
+    const h = Math.sin(deltaLat/2)**2+Math.cos(rad(a.lat))*Math.cos(rad(b.lat))*Math.sin(deltaLng/2)**2;
+    return 2*R*Math.asin(Math.min(1,Math.sqrt(h)));
+  }
+  const formatDist = meters => Number.isFinite(meters) ? (meters < 1000 ? `${nf.format(Math.round(meters))}m` : `${(meters/1000).toFixed(2)}km`) : '—';
+  function coord(lat,lng) { return new window.kakao.maps.LatLng(lat,lng); }
+  function clearMapPoints() {
+    for (const marker of m.markers) marker.setMap(null);
+    m.markers=[];
+    if (m.routeLine) m.routeLine.setMap(null);
+    m.routeLine=null;
+  }
+  function imageFor(kind) {
+    const fill = kind === 'origin' ? '#1158bd' : '#ed8a32';
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="32" height="42" viewBox="0 0 32 42"><path d="M16 2C7.7 2 1 8.6 1 16.8 1 28 16 40 31 28 31 16.8 31 16.8 31 8.6 24.3 2 16 2Z" fill="${fill}" stroke="white" stroke-width="2"/><circle cx="16" cy="16" r="6.3" fill="white"/></svg>`;
+    return new window.kakao.maps.MarkerImage('data:image/svg+xml;charset=UTF-8,'+encodeURIComponent(svg),new window.kakao.maps.Size(32,42),{offset:new window.kakao.maps.Point(16,40)});
+  }
+  async function initMap() {
+    if (m.map) return m.map;
+    if (m.sdkPromise) return m.sdkPromise;
+    m.sdkPromise = (async()=>{
+      const config = await getJson('/api/map-config');
+      if (!config.mapKey) throw new Error('지도 표시를 위해 KAKAO_MAP_JS_KEY 변수를 등록해 주세요. 거리 목록은 계속 사용할 수 있습니다.');
+      if (!window.kakao?.maps) {
+        await new Promise((resolve,reject)=>{
+          const script = document.createElement('script');
+          script.src='https://dapi.kakao.com/v2/maps/sdk.js?autoload=false&appkey='+encodeURIComponent(config.mapKey);
+          script.async=true;script.onload=resolve;script.onerror=()=>reject(new Error('카카오 지도 SDK 로드 실패. JavaScript 키에 웹사이트 도메인을 등록했는지 확인하세요.'));
+          document.head.appendChild(script);
+        });
+      }
+      await new Promise((resolve,reject)=>{
+        try {window.kakao.maps.load(resolve);}catch {reject(new Error('카카오 지도 초기화에 실패했습니다. JS 키와 사이트 도메인을 확인하세요.'));}
+      });
+      const el=$('apt-map');
+      el.replaceChildren();
+      m.map = new window.kakao.maps.Map(el,{center:coord(m.origin.lat,m.origin.lng),level:6});
+      m.originMarker = new window.kakao.maps.Marker({map:m.map,position:coord(m.origin.lat,m.origin.lng),image:imageFor('origin'),title:'기준 위치'});
+      setTimeout(()=>m.map.relayout(),0);
+      return m.map;
+    })().catch(error=>{m.sdkPromise=null;throw error;});
+    return m.sdkPromise;
+  }
+  function drawPoints() {
+    if (!m.map || !m.origin) return;
+    clearMapPoints();
+    m.originMarker?.setMap(null);
+    m.originMarker = new window.kakao.maps.Marker({map:m.map,position:coord(m.origin.lat,m.origin.lng),image:imageFor('origin'),title:'기준 위치'});
+    const bounds = new window.kakao.maps.LatLngBounds();
+    bounds.extend(coord(m.origin.lat,m.origin.lng));
+    m.properties.forEach((apt,i)=>{
+      const marker = new window.kakao.maps.Marker({map:m.map,position:coord(apt.lat,apt.lng),image:imageFor('apt'),title:apt.name});
+      window.kakao.maps.event.addListener(marker,'click',()=>choose(i));
+      m.markers.push(marker); bounds.extend(coord(apt.lat,apt.lng));
+    });
+    m.map.setBounds(bounds,38,38,38,38);
+    if (!m.properties.length) m.map.setLevel(5);
+  }
+  async function locate() {
+    const addr=$('base-address').value.trim();
+    if (!addr) return setInfo('기준 주소를 입력해 주세요.',true);
+    $('locate-button').disabled=true;
+    setInfo('입력한 주소를 좌표로 변환하고 있습니다…');
+    try {
+      const geo=await getJson('/api/geocode?'+new URLSearchParams({address:addr}));
+      m.origin={lat:geo.lat,lng:geo.lng,address:geo.address};
+      m.token++;
+      m.properties=[]; m.selected=null; m.route=null;
+      $('route-detail').hidden=true;
+      $('map-apt-list').innerHTML='<div class="list-empty">기준 위치가 설정됐습니다.<br />거래 자료를 조회한 후 아파트 지도를 표시하세요.</div>';
+      $('map-result-count').textContent='0개 단지';
+      $('map-apts-button').disabled = !state.complete || !state.filtered.length;
+      let mapWarning='';
+      try { await initMap();drawPoints(); } catch(err) {mapWarning=' 지도 표시: '+err.message;}
+      setInfo(`기준 위치 확인: ${geo.address}. 실거래 조회 후 [아파트 지도 표시]를 눌러주세요.${mapWarning}`,Boolean(mapWarning));
+    } catch(err){setInfo(err.message,true);} finally {$('locate-button').disabled=false;}
+  }
+  function invalidate() {
+    m.token++;
+    m.properties=[];m.selected=null;m.route=null;
+    clearMapPoints();
+    $('route-detail').hidden=true;
+    $('map-result-count').textContent='0개 단지';
+    $('map-apt-list').innerHTML='<div class="list-empty">조회된 아파트를 표시하려면<br />[아파트 지도 표시]를 눌러주세요.</div>';
+    $('map-apts-button').disabled=!m.origin||!state.complete||!state.filtered.length;
+    if (m.map) drawPoints();
+  }
+  function groupsForSearch() {
+    const seen=new Set(); const output=[];
+    for (const r of state.filtered) {
+      const key=`${r.dong}|${r.jibun}|${r.aptName}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      output.push({key, name:r.aptName, dong:r.dong, jibun:r.jibun, sample:r});
+      if(output.length>=20) break;
+    }
+    return output;
+  }
+  async function findApt(item) {
+    let prefix = $('sido').value === '__manual__' ? '' : `${$('sido').value} ${selectedDistrictName()} `;
+    // Prefer an exact lot-address lookup to prevent same-name apartments being mixed.
+    const hasLot = Boolean(item.jibun && /^\d/.test(item.jibun));
+    const input = hasLot ? `${prefix}${item.dong} ${item.jibun}` : `${prefix}${item.dong} ${item.name}`;
+    const params = new URLSearchParams({address:input, mode:'apt'});
+    const cacheKey=`${input}|apt`;
+    if (!m.geocodeCache.has(cacheKey)) m.geocodeCache.set(cacheKey,getJson('/api/geocode?'+params));
+    try {
+      const geo=await m.geocodeCache.get(cacheKey);
+      return {...item,lat:geo.lat,lng:geo.lng,address:geo.address,quality:geo.precise?'지번 주소':'단지명 추정',meters:distance(m.origin,geo)};
+    } catch {m.geocodeCache.delete(cacheKey); return null;}
+  }
+  function renderAptList() {
+    $('map-result-count').textContent=`${m.properties.length}개 단지`;
+    if(!m.properties.length) {
+      $('map-apt-list').innerHTML='<div class="list-empty">주소가 확인된 단지가 없습니다.<br />아파트명 또는 조회 지역을 확인하세요.</div>';
+      return;
+    }
+    $('map-apt-list').innerHTML=m.properties.map((r,i)=>`<button type="button" class="map-apt-item ${m.selected===i?'active':''}" data-apt-index="${i}"><span class="apt-rank">${i+1}</span><span class="apt-result-main"><span class="apt-result-name">${esc(r.name)}</span><span class="apt-result-sub">${esc(r.dong)} ${esc(r.jibun)} · ${r.quality==='지번 주소'?'지번 검색':'위치 확인 필요'}</span></span><span class="apt-result-distance">${formatDist(r.meters)}</span></button>`).join('');
+    for (const btn of $('map-apt-list').querySelectorAll('[data-apt-index]')) btn.addEventListener('click',()=>choose(Number(btn.dataset.aptIndex)));
+  }
+  async function displayApartments() {
+    if (!m.origin) return setInfo('먼저 기준 주소를 입력해 주세요.',true);
+    if (!state.complete || !state.filtered.length) return setInfo('실거래가 조회 결과가 없습니다. 먼저 실거래가를 조회하세요.',true);
+    const token=++m.token;
+    $('map-apts-button').disabled=true;
+    m.properties=[];m.selected=null;m.route=null;
+    $('route-detail').hidden=true;
+    clearMapPoints();
+    const candidates=groupsForSearch();
+    let next=0,processed=0;
+    const results=[];
+    setInfo(`${candidates.length}개 아파트의 위치를 확인하고 있습니다…`);
+    async function worker() {
+      while(next<candidates.length && token===m.token) {
+        const item=candidates[next++];
+        const geo=await findApt(item);
+        if(token!==m.token) return;
+        if(geo) results.push(geo);
+        processed++;
+        setInfo(`아파트 주소 변환 중: ${processed}/${candidates.length}개 · 위치 확인 ${results.length}개`);
+      }
+    }
+    try {
+      await Promise.all(Array.from({length:Math.min(3,candidates.length)},worker));
+      if(token!==m.token) return;
+      m.properties=results.sort((a,b)=>a.meters-b.meters);
+      m.selected=null;renderAptList();drawPoints();
+      setInfo(`기준 주소에서 가까운 순으로 ${m.properties.length}개 단지를 표시했습니다. 단지를 클릭하면 차량·도보 경로를 조회합니다. 위치 불명확·검색 실패 ${candidates.length-m.properties.length}개.`);
+    } finally { if(token===m.token) $('map-apts-button').disabled=false; }
+  }
+  function routeValue(id,metric) {$(id).textContent=metric?.available ? `${metric.minutes}분` : '조회 불가';}
+  function routeDistanceValue(id,metric) {$(id).textContent=metric?.available ? `이동 ${formatDist(metric.distanceMeters)}` : (metric?.reason||'경로 조회 실패');}
+  function drawRoute(kind) {
+    if(!m.map) return;
+    if(m.routeLine) m.routeLine.setMap(null);
+    m.routeLine=null;
+    const result=m.route?.[kind];
+    $('show-drive-route').classList.toggle('active',kind==='drive');
+    $('show-walk-route').classList.toggle('active',kind==='walk');
+    if (!result?.available || !result.path?.length) return;
+    m.routeLine = new window.kakao.maps.Polyline({
+      map:m.map, path:result.path.map(([lat,lng])=>coord(lat,lng)),
+      strokeWeight:5,strokeColor:kind==='drive'?'#1663ce':'#ea7c2e',strokeOpacity:0.9,strokeStyle:'solid',
+    });
+  }
+  async function choose(index) {
+    const apt=m.properties[index];
+    if(!apt||!m.origin) return;
+    const token=m.token;
+    m.selected=index; m.route=null;
+    renderAptList();
+    $('route-detail').hidden=false;
+    $('route-name').textContent=apt.name;
+    $('route-quality').textContent=apt.quality;
+    $('route-address').textContent=apt.address;
+    $('straight-distance').textContent=formatDist(apt.meters);
+    for(const id of ['drive-duration','walk-duration']) $(id).textContent='조회 중';
+    for(const id of ['drive-distance','walk-distance']) $(id).textContent='실제 경로 조회 중…';
+    $('show-drive-route').disabled=true;
+    $('show-walk-route').disabled=true;
+    $('external-map-link').href=`https://map.kakao.com/link/to/${encodeURIComponent(apt.name)},${apt.lat},${apt.lng}`;
+    if(m.map) {
+      if(m.routeLine)m.routeLine.setMap(null);
+      m.routeLine=null;
+      m.map.panTo(coord(apt.lat,apt.lng));
+    }
+    const params = new URLSearchParams({fromLat:m.origin.lat,fromLng:m.origin.lng,toLat:apt.lat,toLng:apt.lng});
+    const key=params.toString();
+    if (!m.routeCache.has(key)) m.routeCache.set(key,getJson('/api/route?'+params));
+    try {
+      const result=await m.routeCache.get(key);
+      if(token!==m.token||index!==m.selected)return;
+      m.route=result;
+      routeValue('drive-duration',result.drive);routeValue('walk-duration',result.walk);
+      routeDistanceValue('drive-distance',result.drive);routeDistanceValue('walk-distance',result.walk);
+      $('show-drive-route').disabled=!result.drive?.available;
+      $('show-walk-route').disabled=!result.walk?.available;
+      if(result.drive?.available)drawRoute('drive');else if(result.walk?.available)drawRoute('walk');
+      setInfo('예상시간은 실제 길찾기 API에서 반환한 값입니다. 경로 버튼으로 자동차/도보 이동선을 전환할 수 있습니다.');
+    } catch(err) {
+      m.routeCache.delete(key);
+      if(token!==m.token||index!==m.selected)return;
+      for(const id of ['drive-duration','walk-duration']) $(id).textContent='조회 불가';
+      for(const id of ['drive-distance','walk-distance']) $(id).textContent=err.message;
+      setInfo('길찾기 오류: '+err.message,true);
+    }
+  }
+  function wire() {
+    $('locate-button').addEventListener('click',locate);
+    $('base-address').addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();locate();}});
+    $('map-apts-button').addEventListener('click',displayApartments);
+    $('show-drive-route').addEventListener('click',()=>drawRoute('drive'));
+    $('show-walk-route').addEventListener('click',()=>drawRoute('walk'));
+  }
+  return {wire,invalidate};
+})();
+
 document.addEventListener('DOMContentLoaded', () => {
   initDefaults();
+  mapModule.wire();
   $('sido').addEventListener('change', () => renderDistricts());
   $('sigungu').addEventListener('change', updateCriteriaSummary);
   $('period').addEventListener('change', applyPeriod);
@@ -305,6 +542,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (state.abort) state.abort.abort();
     $('search-form').reset(); initDefaults();
     state.rows = [];state.filtered = [];state.failed = [];state.loading = false;state.complete = false;state.page=1;
+    mapModule.invalidate();
     $('search-button').disabled = false;
     $('search-button').innerHTML = '<span class="button-icon">⌕</span> 실거래가 조회';
     $('download-button').disabled = true;
