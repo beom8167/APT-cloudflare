@@ -186,17 +186,60 @@ function renderRows() {
   $('next-page').disabled = state.page >= max || !total;
   $('results-subtitle').textContent = state.complete ? `총 ${nf.format(state.rows.length)}건 수집 · 조건에 맞는 거래 ${nf.format(total)}건${state.failed.length ? ` · ${state.failed.length}개월 오류` : ''}` : '조건을 선택하고 조회 버튼을 눌러주세요.';
 }
+const API_RETRY_LIMIT = 3;
+const RETRY_HTTP_CODES = new Set([429, 500, 502, 503, 504]);
+function waitForRetry(ms, signal) {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) return reject(new DOMException('요청이 중단되었습니다.', 'AbortError'));
+    let timer;
+    const cancel = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', cancel);
+      reject(new DOMException('요청이 중단되었습니다.', 'AbortError'));
+    };
+    timer = setTimeout(() => {
+      signal?.removeEventListener('abort', cancel);
+      resolve();
+    }, ms);
+    signal?.addEventListener('abort', cancel, {once: true});
+  });
+}
 async function fetchPage(lawdCd, ym, pageNo, signal) {
   const url = new URL(API_PATH, location.href);
   url.searchParams.set('lawdCd', lawdCd);
   url.searchParams.set('ymd', ym);
   url.searchParams.set('pageNo', String(pageNo));
-  const response = await fetch(url, { signal });
-  let data;
-  try { data = await response.json(); } catch { throw new Error('서버가 올바른 JSON을 반환하지 않았습니다. Cloudflare Pages Functions 배포 상태를 확인하세요.'); }
-  if (!response.ok) throw new Error(data?.error || `조회 오류 (${response.status})`);
-  if (!Array.isArray(data.items)) throw new Error('서버의 거래자료 형식이 올바르지 않습니다.');
-  return data;
+  let lastError;
+  for (let attempt = 1; attempt <= API_RETRY_LIMIT; attempt++) {
+    if (signal?.aborted) throw new DOMException('요청이 중단되었습니다.', 'AbortError');
+    let retryable = false;
+    try {
+      const response = await fetch(url, { signal, headers: { Accept: 'application/json' } });
+      const body = await response.text();
+      let data;
+      try { data = JSON.parse(body); } catch {
+        // HTML 에러 페이지(Cloudflare 1101/1102 포함)도 실제 상태코드와 함께 보여 줍니다.
+        const cloudflareCode = body.match(/\b(?:1101|1102|1027)\b/);
+        const codeLabel = cloudflareCode ? `, Cloudflare ${cloudflareCode[0]}` : '';
+        throw Object.assign(new Error(`JSON이 아닌 서버 응답 (HTTP ${response.status}${codeLabel})`),
+          { retryable: RETRY_HTTP_CODES.has(response.status) });
+      }
+      if (!response.ok) {
+        throw Object.assign(new Error(`${data?.error || `서버 오류 (HTTP ${response.status})`}${data?.stage ? ` [${data.stage}]` : ''}`),
+          { retryable: RETRY_HTTP_CODES.has(response.status) && data?.stage !== 'config' && data?.stage !== 'api' });
+      }
+      if (!Array.isArray(data.items)) throw new Error('서버의 거래자료 형식이 올바르지 않습니다.');
+      return data;
+    } catch (error) {
+      if (signal?.aborted || error.name === 'AbortError') throw error;
+      lastError = error;
+      retryable = error.retryable === true || error instanceof TypeError;
+      if (!retryable || attempt === API_RETRY_LIMIT) break;
+      $('progress-caption').textContent = `${ym}월의 ${pageNo}페이지 일시 오류 · ${attempt}회 재시도 중…`;
+      await waitForRetry(700 * attempt, signal);
+    }
+  }
+  throw new Error(`${lastError?.message || '알 수 없는 조회 오류'} (최대 ${API_RETRY_LIMIT}회 시도)`);
 }
 async function fetchMonth(lawdCd, ym, signal) {
   const first = await fetchPage(lawdCd, ym, 1, signal);
@@ -249,11 +292,17 @@ async function runSearch(event) {
         monthResults[idx] = [];
       }
       done++;
+      if (done < months.length && !controller.signal.aborted) {
+        try { await waitForRetry(180, controller.signal); }
+        catch (err) { if (controller.signal.aborted) return; throw err; }
+      }
+      $('progress-caption').textContent = `월별 거래자료 조회 중 · ${done} / ${months.length}개월 처리`;
       $('progress-fill').style.width = `${Math.round(done / months.length * 100)}%`;
       $('progress-count').textContent = `${done} / ${months.length}개월`;
     }
   }
-  await Promise.all(Array.from({ length: Math.min(3, months.length) }, worker));
+  // 과도한 동시 API 호출을 피하고 실패한 달을 개별 재시도합니다.
+  await Promise.all(Array.from({ length: 1 }, worker));
   if (controller.signal.aborted) return;
   state.rows = monthResults.flat().filter(Boolean);
   state.loading = false;
@@ -291,8 +340,20 @@ function exportCsv() {
 
 // Optional map extension: map features never change the official transaction data.
 const mapModule = (() => {
-  const RADIUS_METERS = 3_000; // 기준 주소와 아파트 사이의 직선거리 3km
-  const m = { origin:null, properties:[], map:null, originMarker:null, markers:[], routeLine:null,
+  const AVAILABLE_RADII = new Set([500, 1000, 3000, 5000, 10000]);
+  const selectedRadius = () => {
+    const value = Number($('map-radius').value);
+    return AVAILABLE_RADII.has(value) ? value : 3000;
+  };
+  const radiusLabel = () => {
+    const meters = selectedRadius();
+    return meters < 1000 ? `${meters}m` : `${meters / 1000}km`;
+  };
+  function updateRadiusLabels() {
+    for (const el of document.querySelectorAll('[data-radius-label]')) el.textContent = radiusLabel();
+  }
+  const m = { origin:null, properties:[], allProperties:null, searchStats:null, searching:false,
+    map:null, originMarker:null, markers:[], routeLine:null,
     selected:null, route:null, token:0, sdkPromise:null, radiusCircle:null, geocodeCache:new Map(), routeCache:new Map() };
   const setInfo = (message, error=false) => {
     $('map-feedback').textContent = message;
@@ -356,16 +417,16 @@ const mapModule = (() => {
     clearMapPoints();
     m.originMarker?.setMap(null);
     m.originMarker = new window.kakao.maps.Marker({map:m.map,position:coord(m.origin.lat,m.origin.lng),image:imageFor('origin'),title:'기준 위치'});
-    // 기준 위치의 3km 검색 반경 원을 그립니다. 직선거리이며 실제 이동거리가 아닙니다.
+    // 사용자가 선택한 반경 원을 그립니다. 직선거리이며 실제 이동거리가 아닙니다.
     if (m.radiusCircle) m.radiusCircle.setMap(null);
     m.radiusCircle = new window.kakao.maps.Circle({
-      map:m.map, center:coord(m.origin.lat,m.origin.lng), radius:RADIUS_METERS,
+      map:m.map, center:coord(m.origin.lat,m.origin.lng), radius:selectedRadius(),
       strokeWeight:2, strokeColor:'#2779cf', strokeOpacity:0.85,
       strokeStyle:'solid', fillColor:'#4e9de6', fillOpacity:0.08,
     });
     const bounds = new window.kakao.maps.LatLngBounds();
-    const latDelta=RADIUS_METERS/111320;
-    const lngDelta=RADIUS_METERS/(111320*Math.max(0.15,Math.cos(m.origin.lat*Math.PI/180)));
+    const latDelta=selectedRadius()/111320;
+    const lngDelta=selectedRadius()/(111320*Math.max(0.15,Math.cos(m.origin.lat*Math.PI/180)));
     bounds.extend(coord(m.origin.lat-latDelta,m.origin.lng-lngDelta));
     bounds.extend(coord(m.origin.lat+latDelta,m.origin.lng+lngDelta));
     m.properties.forEach((apt,i)=>{
@@ -384,7 +445,7 @@ const mapModule = (() => {
       const geo=await getJson('/api/geocode?'+new URLSearchParams({address:addr}));
       m.origin={lat:geo.lat,lng:geo.lng,address:geo.address,inputAddress:addr};
       m.token++;
-      m.properties=[]; m.selected=null; m.route=null;
+      m.properties=[]; m.allProperties=null; m.searchStats=null; m.searching=false; m.selected=null; m.route=null;
       $('route-detail').hidden=true;
       $('map-apt-list').innerHTML='<div class="list-empty">기준 위치가 설정됐습니다.<br />거래 자료를 조회한 후 아파트 지도를 표시하세요.</div>';
       $('map-result-count').textContent='0개 단지';
@@ -396,7 +457,7 @@ const mapModule = (() => {
   }
   function invalidate() {
     m.token++;
-    m.properties=[];m.selected=null;m.route=null;
+    m.properties=[];m.allProperties=null;m.searchStats=null;m.searching=false;m.selected=null;m.route=null;
     clearMapPoints();
     $('route-detail').hidden=true;
     $('map-result-count').textContent='0개 단지';
@@ -431,11 +492,39 @@ const mapModule = (() => {
   function renderAptList() {
     $('map-result-count').textContent=`${m.properties.length}개 단지`;
     if(!m.properties.length) {
-      $('map-apt-list').innerHTML='<div class="list-empty">조회된 거래 단지 중 직선거리 3km 이내로 확인된 아파트가 없습니다.<br />기준 주소와 조회 지역을 확인하세요.</div>';
+      $('map-apt-list').innerHTML=`<div class="list-empty">조회된 거래 단지 중 직선거리 ${radiusLabel()} 이내로 확인된 아파트가 없습니다.<br />기준 주소와 조회 지역을 확인하세요.</div>`;
       return;
     }
     $('map-apt-list').innerHTML=m.properties.map((r,i)=>`<button type="button" class="map-apt-item ${m.selected===i?'active':''}" data-apt-index="${i}"><span class="apt-rank">${i+1}</span><span class="apt-result-main"><span class="apt-result-name">${esc(r.name)}</span><span class="apt-result-sub">${esc(r.dong)} ${esc(r.jibun)} · ${r.quality==='지번 주소'?'지번 검색':'위치 확인 필요'}</span></span><span class="apt-result-distance">${formatDist(r.meters)}</span></button>`).join('');
     for (const btn of $('map-apt-list').querySelectorAll('[data-apt-index]')) btn.addEventListener('click',()=>choose(Number(btn.dataset.aptIndex)));
+  }
+  function applyRadiusFilter() {
+    if(m.allProperties === null) return;
+    const radius = selectedRadius();
+    m.properties = m.allProperties.filter(apt => apt.meters <= radius);
+    // 반경 변경 시 선택 단지가 범위에서 제외될 수 있으므로 경로 선택을 초기화합니다.
+    m.selected=null;
+    m.route=null;
+    $('route-detail').hidden=true;
+    renderAptList();
+    drawPoints();
+    const outside=m.allProperties.length-m.properties.length;
+    const failed=m.searchStats?.geocodeFailed ?? 0;
+    const checked=m.searchStats?.processed ?? m.allProperties.length;
+    const partial=Boolean(state.failed.length || failed);
+    setInfo(`기준 위치 직선거리 ${radiusLabel()} 이내 ${m.properties.length}개 단지를 가까운 순으로 표시했습니다. 검사 ${checked}개 / 범위 밖 ${outside}개 / 위치 미확인 ${failed}개${state.failed.length?` / 거래 조회 실패 ${state.failed.length}개월`:''}. ${partial?'자료 또는 위치 정보가 누락된 단지가 있을 수 있습니다.':'단지를 선택하면 차량·도보 이동시간을 조회합니다.'}`, partial);
+  }
+  function changeRadius() {
+    updateRadiusLabels();
+    if(m.searching) {
+      drawPoints();
+      setInfo(`현재 단지 위치 확인 중입니다. 완료 후 선택한 ${radiusLabel()} 범위만 표시됩니다…`);
+    } else if (m.allProperties !== null) {
+      applyRadiusFilter();
+    } else {
+      drawPoints();
+      if(m.origin) setInfo(`검색 반경을 ${radiusLabel()}로 변경했습니다. [아파트 지도 표시]를 눌러주세요.`);
+    }
   }
   async function displayApartments() {
     if (!m.origin) return setInfo('먼저 기준 주소를 입력해 주세요.',true);
@@ -443,34 +532,38 @@ const mapModule = (() => {
     if (!state.complete || !state.filtered.length) return setInfo('실거래가 조회 결과가 없습니다. 먼저 실거래가를 조회하세요.',true);
     const token=++m.token;
     $('map-apts-button').disabled=true;
-    m.properties=[];m.selected=null;m.route=null;
+    m.properties=[];m.allProperties=null;m.searchStats=null;m.searching=true;m.selected=null;m.route=null;
     $('route-detail').hidden=true;
     clearMapPoints();
     const candidates=groupsForSearch();
-    let next=0,processed=0,geocodeFailed=0,outsideCount=0;
+    let next=0,processed=0,geocodeFailed=0;
     const results=[];
-    setInfo(`조회된 고유 단지 ${candidates.length}개의 위치를 확인하고 있습니다. 직선거리 3km 이내만 지도에 표시합니다…`);
+    setInfo(`조회된 고유 단지 ${candidates.length}개의 위치를 확인하고 있습니다. 선택한 ${radiusLabel()} 이내만 지도에 표시합니다…`);
     async function worker() {
       while(next<candidates.length && token===m.token) {
         const item=candidates[next++];
         const geo=await findApt(item);
         if(token!==m.token) return;
         if (!geo) geocodeFailed++;
-        else if (geo.meters <= RADIUS_METERS) results.push(geo); // 3km 경계 포함
-        else outsideCount++;
+        else results.push(geo); // 최대 10km 필터를 미리 걸지 않아 반경 변경 시 위치 조회를 반복하지 않음
         processed++;
-        setInfo(`단지 위치 확인 ${processed}/${candidates.length} · 3km 이내 ${results.length}개 · 범위 밖 ${outsideCount}개 · 위치 미확인 ${geocodeFailed}개`);
+        const included=results.filter(r=>r.meters<=selectedRadius()).length;
+        setInfo(`단지 위치 확인 ${processed}/${candidates.length} · ${radiusLabel()} 이내 ${included}개 · 위치 미확인 ${geocodeFailed}개`);
       }
     }
     try {
-      // 모든 고유 단지를 검사합니다. 단, REST API 호출 폭주를 막기 위해 최대 3건씩 처리합니다.
+      // 고유 단지 위치를 전부 확인하고 클라이언트에서 선택 반경에 맞춰 필터링합니다.
       await Promise.all(Array.from({length:Math.min(3,candidates.length)},worker));
       if(token!==m.token) return;
-      m.properties=results.sort((a,b)=>a.meters-b.meters);
-      m.selected=null;renderAptList();drawPoints();
-      const partial=Boolean(state.failed.length || geocodeFailed);
-      setInfo(`기준 주소 직선거리 3km 이내 ${m.properties.length}개 단지를 가까운 순으로 표시했습니다. 검사 ${processed}개 / 범위 밖 ${outsideCount}개 / 위치 미확인 ${geocodeFailed}개${state.failed.length?` / 거래 조회 실패 ${state.failed.length}개월`:''}. ${partial?'일부 단지는 제외 여부를 확정할 수 없습니다.':'단지를 선택하면 차량·도보 이동시간을 조회합니다.'}`,partial);
-    } finally { if(token===m.token) $('map-apts-button').disabled=false; }
+      m.allProperties=results.sort((a,b)=>a.meters-b.meters);
+      m.searchStats={processed, geocodeFailed};
+      applyRadiusFilter();
+    } finally {
+      if(token===m.token) {
+        m.searching=false;
+        $('map-apts-button').disabled=false;
+      }
+    }
   }
   function routeValue(id,metric) {$(id).textContent=metric?.available ? `${metric.minutes}분` : '조회 불가';}
   function routeDistanceValue(id,metric) {$(id).textContent=metric?.available ? `이동 ${formatDist(metric.distanceMeters)}` : (metric?.reason||'경로 조회 실패');}
@@ -530,6 +623,8 @@ const mapModule = (() => {
     }
   }
   function wire() {
+    $('map-radius').addEventListener('change',changeRadius);
+    updateRadiusLabels();
     $('locate-button').addEventListener('click',locate);
     $('base-address').addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();locate();}});
     $('map-apts-button').addEventListener('click',displayApartments);

@@ -83,11 +83,12 @@
       </section>
 
       <section class="panel map-panel" aria-labelledby="map-heading">
-        <div class="map-topbar"><div><div class="overline">LOCATION & ROUTE</div><h2 id="map-heading">지도 · 3km 이내 아파트 비교</h2><p>기준 주소 중심 반경 3km 이내의 거래 아파트를 지도에 표시하고, 단지별 차량·도보 이동시간을 비교합니다.</p></div><span class="map-info-badge">직선거리 반경 3km</span></div>
+        <div class="map-topbar"><div><div class="overline">LOCATION & ROUTE</div><h2 id="map-heading">지도 · <span data-radius-label>3km</span> 이내 아파트 비교</h2><p>기준 주소 중심 반경 <span data-radius-label>3km</span> 이내의 거래 아파트를 지도에 표시하고, 단지별 차량·도보 이동시간을 비교합니다.</p></div><span class="map-info-badge">직선거리 반경 <span data-radius-label>3km</span></span></div>
         <div class="map-search-bar">
-          <label class="field" for="base-address"><span>기준 위치 주소 <small>필수</small></span><input id="base-address" type="text" maxlength="140" placeholder="예: 서울특별시 강남구 테헤란로 152" autocomplete="street-address" /></label>
+          <label class="field base-address-field" for="base-address"><span>기준 위치 주소 <small>필수</small></span><input id="base-address" type="text" maxlength="140" placeholder="예: 서울특별시 강남구 테헤란로 152" autocomplete="street-address" /></label>
+          <label class="field map-radius-field" for="map-radius"><span>검색 반경 <small>직선거리</small></span><select id="map-radius" aria-label="아파트 검색 반경"><option value="500">500m</option><option value="1000">1km</option><option value="3000" selected>3km</option><option value="5000">5km</option><option value="10000">10km</option></select></label>
           <button id="locate-button" type="button" class="button primary">⌖ 기준 주소 표시</button>
-          <button id="map-apts-button" type="button" class="button secondary" disabled>3km 이내 아파트 표시</button>
+          <button id="map-apts-button" type="button" class="button secondary" disabled><span data-radius-label>3km</span> 이내 아파트 표시</button>
         </div>
         <div class="map-feedback" id="map-feedback" role="status" aria-live="polite">① 기준 주소를 입력해 위치를 확인하고 ② 실거래 자료를 조회한 다음 ③ 아파트를 지도에 표시하세요.</div>
         <div class="map-content">
@@ -95,7 +96,7 @@
             <div id="apt-map" class="map-canvas" aria-label="기준 위치 및 아파트 지도">
               <div class="map-placeholder"><div class="map-placeholder-icon">⌖</div><strong>기준 주소를 입력하면 지도가 표시됩니다</strong><p>카카오맵 JavaScript 키 등록 후 사용 가능합니다.</p></div>
             </div>
-            <div class="map-legend"><span><i class="legend-dot base"></i> 기준 위치</span><span><i class="legend-dot home"></i> 3km 이내 아파트</span><span><i class="legend-dot radius"></i> 직선거리 3km 경계</span><span>아파트 위치는 지번·단지명 검색 결과이며 확인이 필요할 수 있습니다.</span></div>
+            <div class="map-legend"><span><i class="legend-dot base"></i> 기준 위치</span><span><i class="legend-dot home"></i> <span data-radius-label>3km</span> 이내 아파트</span><span><i class="legend-dot radius"></i> 직선거리 <span data-radius-label>3km</span> 경계</span><span>아파트 위치는 지번·단지명 검색 결과이며 확인이 필요할 수 있습니다.</span></div>
           </div>
           <aside class="map-sidebar">
             <div class="sidebar-heading"><strong>조회 아파트</strong><span id="map-result-count">0개 단지</span></div>
@@ -109,7 +110,7 @@
             </div>
           </aside>
         </div>
-        <p class="map-footnote">※ 직선거리와 실제 도로·보행 거리는 다릅니다. 예상 이동시간은 각 길찾기 API가 정상 응답한 경우에만 표시됩니다. 조회된 시·군·구의 고유 아파트 단지를 주소 변환한 뒤 직선거리 3km 이내만 표시합니다. 다른 시·군·구의 단지는 현재 검색 결과에 포함되지 않으며 위치 확인이 안 된 단지도 누락될 수 있습니다. 단지 수에 따라 카카오 주소 검색 API 호출량과 처리 시간이 증가할 수 있습니다. 선택한 단지만 실제 경로를 조회합니다.</p>
+        <p class="map-footnote">※ 직선거리와 실제 도로·보행 거리는 다릅니다. 예상 이동시간은 각 길찾기 API가 정상 응답한 경우에만 표시됩니다. 조회된 시·군·구의 고유 아파트 단지를 주소 변환한 뒤 선택한 직선거리 반경 이내만 표시합니다. 다른 시·군·구의 단지는 현재 검색 결과에 포함되지 않으며 위치 확인이 안 된 단지도 누락될 수 있습니다. 단지 수에 따라 카카오 주소 검색 API 호출량과 처리 시간이 증가할 수 있습니다. 선택한 단지만 실제 경로를 조회합니다.</p>
       </section>
 
       <section class="panel results-panel" aria-labelledby="results-heading">
