@@ -7,6 +7,97 @@ const API_PATH = '/api/apt-rent';
 const nf = new Intl.NumberFormat('ko-KR');
 const state = { rows: [], filtered: [], page: 1, loading: false, abort: null, failed: [], complete: false };
 
+// 시군구 법정동코드 5자리. 주요 지역을 지역명으로 선택하고, 기타 지역은 코드 직접 입력 가능.
+// 지역코드는 행정표준코드관리시스템(code.go.kr)에서 변경 여부를 확인하세요.
+const REGION_CODES = Object.freeze({
+  '서울특별시': [
+    ['종로구','11110'], ['중구','11140'], ['용산구','11170'], ['성동구','11200'],
+    ['광진구','11215'], ['동대문구','11230'], ['중랑구','11260'], ['성북구','11290'],
+    ['강북구','11305'], ['도봉구','11320'], ['노원구','11350'], ['은평구','11380'],
+    ['서대문구','11410'], ['마포구','11440'], ['양천구','11470'], ['강서구','11500'],
+    ['구로구','11530'], ['금천구','11545'], ['영등포구','11560'], ['동작구','11590'],
+    ['관악구','11620'], ['서초구','11650'], ['강남구','11680'], ['송파구','11710'], ['강동구','11740'],
+  ],
+  '경기도': [
+    ['수원시 장안구','41111'], ['수원시 권선구','41113'], ['수원시 팔달구','41115'], ['수원시 영통구','41117'],
+    ['성남시 수정구','41131'], ['성남시 중원구','41133'], ['성남시 분당구','41135'],
+    ['고양시 덕양구','41281'], ['고양시 일산동구','41285'], ['고양시 일산서구','41287'],
+    ['용인시 처인구','41461'], ['용인시 기흥구','41463'], ['용인시 수지구','41465'],
+    ['안양시 동안구','41173'], ['부천시 원미구','41192'], ['하남시','41450'], ['김포시','41570'],
+  ],
+  '인천광역시': [
+    ['미추홀구','28177'], ['연수구','28185'], ['남동구','28200'],
+    ['부평구','28237'], ['계양구','28245'], ['강화군','28710'],
+  ],
+  '대전광역시': [
+    ['동구','30110'], ['중구','30140'], ['서구','30170'], ['유성구','30200'], ['대덕구','30230'],
+  ],
+  '세종특별자치시': [['세종특별자치시 전체','36110']],
+  '부산광역시': [
+    ['중구','26110'], ['서구','26140'], ['동구','26170'], ['영도구','26200'],
+    ['부산진구','26230'], ['동래구','26260'], ['남구','26290'], ['북구','26320'],
+    ['해운대구','26350'], ['사하구','26380'], ['금정구','26410'], ['강서구','26440'],
+    ['연제구','26470'], ['수영구','26500'], ['사상구','26530'], ['기장군','26710'],
+  ],
+  '대구광역시': [
+    ['중구','27110'], ['동구','27140'], ['서구','27170'], ['남구','27200'],
+    ['북구','27230'], ['수성구','27260'], ['달서구','27290'], ['달성군','27710'], ['군위군','27720'],
+  ],
+  '충청북도': [
+    ['청주시 상당구','43111'], ['청주시 서원구','43112'],
+    ['청주시 흥덕구','43113'], ['청주시 청원구','43114'],
+    ['충주시','43130'], ['제천시','43150'],
+  ],
+});
+
+function selectedDistrictName() {
+  const opt = $('sigungu').selectedOptions[0];
+  return opt ? opt.textContent : '';
+}
+function selectedLawdCode() {
+  return $('sido').value === '__manual__' ? $('lawd-cd').value.trim() : $('sigungu').value;
+}
+function renderDistricts(preferred) {
+  const city = $('sido').value;
+  const isManual = city === '__manual__';
+  $('manual-code-area').hidden = !isManual;
+  $('sigungu').disabled = isManual;
+  $('sigungu').required = !isManual;
+  $('lawd-cd').required = isManual;
+  if (isManual) {
+    $('sigungu').replaceChildren(new Option('지역코드 직접 입력', ''));
+    $('lawd-cd').value = '';
+  } else {
+    const districts = REGION_CODES[city] || [];
+    $('sigungu').replaceChildren(...districts.map(([name, code]) => new Option(name, code)));
+    $('sigungu').value = districts.some(([, code]) => code === preferred) ? preferred : (districts[0]?.[1] || '');
+  }
+  updateCriteriaSummary();
+}
+function updateCriteriaSummary() {
+  const region = $('sido').value === '__manual__'
+    ? `지역코드 ${$('lawd-cd').value.trim() || '미입력'}`
+    : `${$('sido').value} ${selectedDistrictName()}`;
+  const period = $('period').value === 'custom'
+    ? `${$('start-month').value || '시작월'} ~ ${$('end-month').value || '종료월'}`
+    : `최근 ${$('period').value}개월`;
+  const apt = $('apt-name').value.trim() || '아파트 전체';
+  $('criteria-summary').textContent = `${region} · ${period} · ${apt}`;
+}
+function applyPeriod() {
+  const now = currentSeoulYm();
+  const value = $('period').value;
+  $('custom-period-area').hidden = value !== 'custom';
+  if (value !== 'custom') {
+    const count = Number(value);
+    $('end-month').value = now;
+    $('start-month').value = offsetYm(now, -(count - 1));
+  }
+  $('start-month').max = now;
+  $('end-month').max = now;
+  updateCriteriaSummary();
+}
+
 function currentSeoulYm() {
   const parts = new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Seoul', year: 'numeric', month: '2-digit' }).formatToParts(new Date());
   return `${parts.find(p => p.type === 'year').value}-${parts.find(p => p.type === 'month').value}`;
@@ -33,13 +124,11 @@ function notify(message, type = '') {
 }
 
 function initDefaults() {
-  const now = currentSeoulYm();
-  $('start-month').value = offsetYm(now, -5);
-  $('end-month').value = now;
-  $('start-month').max = now;
-  $('end-month').max = now;
-  $('region').value = '11680';
-  $('lawd-cd').value = '11680';
+  $('sido').value = '서울특별시';
+  $('period').value = '6';
+  $('lawd-cd').value = '';
+  renderDistricts('11680');
+  applyPeriod();
 }
 
 function updateFilters() {
@@ -123,11 +212,11 @@ async function fetchMonth(lawdCd, ym, signal) {
 }
 async function runSearch(event) {
   event.preventDefault();
-  const lawdCd = $('lawd-cd').value.trim();
+  const lawdCd = selectedLawdCode();
   const start = $('start-month').value;
   const end = $('end-month').value;
   const now = currentSeoulYm();
-  if (!/^\d{5}$/.test(lawdCd)) return notify('시군구 법정동코드 앞 5자리를 입력하세요.', 'error');
+  if (!/^\d{5}$/.test(lawdCd)) return notify('조회 지역을 선택하거나 시군구 법정동코드 5자리를 입력하세요.', 'error');
   if (!start || !end || start > end || end > now) return notify('조회 시작월과 종료월을 확인하세요. 미래의 계약월은 조회할 수 없습니다.', 'error');
   const months = monthsBetween(start, end);
   if (!months.length || months.length > MONTH_LIMIT || offsetYm(start, months.length - 1) !== end) {
@@ -175,7 +264,7 @@ async function runSearch(event) {
   if (state.failed.length) {
     notify(`${months.length-state.failed.length}개월 조회 성공, ${state.failed.length}개월 실패. 불완전한 자료입니다. 실패 월: ${state.failed.join(' / ')}`, 'warning');
   } else if (!state.rows.length) {
-    notify('해당 기간의 공개 거래자료가 없습니다. 계약월이나 지역코드를 변경해 조회해 보세요.');
+    notify('해당 기간의 공개 거래자료가 없습니다. 다른 지역이나 계약월로 검색해 보세요.');
   } else {
     notify(`${months.length}개월 자료를 정상 조회했습니다. 총 ${nf.format(state.rows.length)}건 수집 · ${nf.format(state.filtered.length)}건 표시`);
   }
@@ -195,16 +284,21 @@ function exportCsv() {
   const blob = new Blob([content], {type:'text/csv;charset=utf-8'});
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a'); a.href = url;
-  a.download = `아파트_전월세_실거래가_${$('lawd-cd').value.trim()}_${$('start-month').value}_${$('end-month').value}.csv`;
+  a.download = `아파트_전월세_실거래가_${selectedLawdCode()}_${$('start-month').value}_${$('end-month').value}.csv`;
   document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 document.addEventListener('DOMContentLoaded', () => {
   initDefaults();
-  $('region').addEventListener('change', e => { if (e.target.value) $('lawd-cd').value = e.target.value; });
+  $('sido').addEventListener('change', () => renderDistricts());
+  $('sigungu').addEventListener('change', updateCriteriaSummary);
+  $('period').addEventListener('change', applyPeriod);
+  for (const id of ['start-month', 'end-month', 'apt-name']) {
+    $(id).addEventListener('input', updateCriteriaSummary);
+  }
   $('lawd-cd').addEventListener('input', e => {
     e.target.value = e.target.value.replace(/\D/g, '').slice(0, 5);
-    if ($('region').value !== e.target.value) $('region').value = '';
+    updateCriteriaSummary();
   });
   $('search-form').addEventListener('submit', runSearch);
   $('reset-button').addEventListener('click', () => {
@@ -216,7 +310,7 @@ document.addEventListener('DOMContentLoaded', () => {
     $('download-button').disabled = true;
     $('progress-area').hidden = true;
     $('stat-all').textContent = $('stat-jeonse').textContent = $('stat-wolse').textContent = $('stat-median').textContent = '—';
-    $('results-body').innerHTML = emptyRow('아직 조회된 내역이 없습니다', '상단에서 지역과 기간을 설정해 조회해 주세요.');
+    $('results-body').innerHTML = emptyRow('아직 조회된 내역이 없습니다', '시·도 / 시·군·구와 기간을 선택해 조회해 주세요.');
     $('results-subtitle').textContent = '조건을 선택하고 조회 버튼을 눌러주세요.';
     $('page-info').textContent='조회 전'; $('page-number').textContent='—';
     $('previous-page').disabled = true; $('next-page').disabled = true; notify('');
