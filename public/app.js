@@ -291,8 +291,9 @@ function exportCsv() {
 
 // Optional map extension: map features never change the official transaction data.
 const mapModule = (() => {
+  const RADIUS_METERS = 10_000; // 기준 주소와 아파트 사이의 직선거리 10km
   const m = { origin:null, properties:[], map:null, originMarker:null, markers:[], routeLine:null,
-    selected:null, route:null, token:0, sdkPromise:null, geocodeCache:new Map(), routeCache:new Map() };
+    selected:null, route:null, token:0, sdkPromise:null, radiusCircle:null, geocodeCache:new Map(), routeCache:new Map() };
   const setInfo = (message, error=false) => {
     $('map-feedback').textContent = message;
     $('map-feedback').classList.toggle('error',error);
@@ -355,15 +356,24 @@ const mapModule = (() => {
     clearMapPoints();
     m.originMarker?.setMap(null);
     m.originMarker = new window.kakao.maps.Marker({map:m.map,position:coord(m.origin.lat,m.origin.lng),image:imageFor('origin'),title:'기준 위치'});
+    // 기준 위치의 10km 검색 반경 원을 그립니다. 직선거리이며 실제 이동거리가 아닙니다.
+    if (m.radiusCircle) m.radiusCircle.setMap(null);
+    m.radiusCircle = new window.kakao.maps.Circle({
+      map:m.map, center:coord(m.origin.lat,m.origin.lng), radius:RADIUS_METERS,
+      strokeWeight:2, strokeColor:'#2779cf', strokeOpacity:0.85,
+      strokeStyle:'solid', fillColor:'#4e9de6', fillOpacity:0.08,
+    });
     const bounds = new window.kakao.maps.LatLngBounds();
-    bounds.extend(coord(m.origin.lat,m.origin.lng));
+    const latDelta=RADIUS_METERS/111320;
+    const lngDelta=RADIUS_METERS/(111320*Math.max(0.15,Math.cos(m.origin.lat*Math.PI/180)));
+    bounds.extend(coord(m.origin.lat-latDelta,m.origin.lng-lngDelta));
+    bounds.extend(coord(m.origin.lat+latDelta,m.origin.lng+lngDelta));
     m.properties.forEach((apt,i)=>{
       const marker = new window.kakao.maps.Marker({map:m.map,position:coord(apt.lat,apt.lng),image:imageFor('apt'),title:apt.name});
       window.kakao.maps.event.addListener(marker,'click',()=>choose(i));
       m.markers.push(marker); bounds.extend(coord(apt.lat,apt.lng));
     });
     m.map.setBounds(bounds,38,38,38,38);
-    if (!m.properties.length) m.map.setLevel(5);
   }
   async function locate() {
     const addr=$('base-address').value.trim();
@@ -372,7 +382,7 @@ const mapModule = (() => {
     setInfo('입력한 주소를 좌표로 변환하고 있습니다…');
     try {
       const geo=await getJson('/api/geocode?'+new URLSearchParams({address:addr}));
-      m.origin={lat:geo.lat,lng:geo.lng,address:geo.address};
+      m.origin={lat:geo.lat,lng:geo.lng,address:geo.address,inputAddress:addr};
       m.token++;
       m.properties=[]; m.selected=null; m.route=null;
       $('route-detail').hidden=true;
@@ -397,11 +407,11 @@ const mapModule = (() => {
   function groupsForSearch() {
     const seen=new Set(); const output=[];
     for (const r of state.filtered) {
+      // 아파트 거래 건수가 아닌 고유 단지 기준으로 위치를 한 번씩 조회합니다.
       const key=`${r.dong}|${r.jibun}|${r.aptName}`;
       if (seen.has(key)) continue;
       seen.add(key);
       output.push({key, name:r.aptName, dong:r.dong, jibun:r.jibun, sample:r});
-      if(output.length>=20) break;
     }
     return output;
   }
@@ -421,7 +431,7 @@ const mapModule = (() => {
   function renderAptList() {
     $('map-result-count').textContent=`${m.properties.length}개 단지`;
     if(!m.properties.length) {
-      $('map-apt-list').innerHTML='<div class="list-empty">주소가 확인된 단지가 없습니다.<br />아파트명 또는 조회 지역을 확인하세요.</div>';
+      $('map-apt-list').innerHTML='<div class="list-empty">조회된 거래 단지 중 직선거리 10km 이내로 확인된 아파트가 없습니다.<br />기준 주소와 조회 지역을 확인하세요.</div>';
       return;
     }
     $('map-apt-list').innerHTML=m.properties.map((r,i)=>`<button type="button" class="map-apt-item ${m.selected===i?'active':''}" data-apt-index="${i}"><span class="apt-rank">${i+1}</span><span class="apt-result-main"><span class="apt-result-name">${esc(r.name)}</span><span class="apt-result-sub">${esc(r.dong)} ${esc(r.jibun)} · ${r.quality==='지번 주소'?'지번 검색':'위치 확인 필요'}</span></span><span class="apt-result-distance">${formatDist(r.meters)}</span></button>`).join('');
@@ -429,6 +439,7 @@ const mapModule = (() => {
   }
   async function displayApartments() {
     if (!m.origin) return setInfo('먼저 기준 주소를 입력해 주세요.',true);
+    if ($('base-address').value.trim() !== m.origin.inputAddress) return setInfo('기준 주소가 변경됐습니다. [기준 주소 표시]를 다시 눌러주세요.',true);
     if (!state.complete || !state.filtered.length) return setInfo('실거래가 조회 결과가 없습니다. 먼저 실거래가를 조회하세요.',true);
     const token=++m.token;
     $('map-apts-button').disabled=true;
@@ -436,25 +447,29 @@ const mapModule = (() => {
     $('route-detail').hidden=true;
     clearMapPoints();
     const candidates=groupsForSearch();
-    let next=0,processed=0;
+    let next=0,processed=0,geocodeFailed=0,outsideCount=0;
     const results=[];
-    setInfo(`${candidates.length}개 아파트의 위치를 확인하고 있습니다…`);
+    setInfo(`조회된 고유 단지 ${candidates.length}개의 위치를 확인하고 있습니다. 직선거리 10km 이내만 지도에 표시합니다…`);
     async function worker() {
       while(next<candidates.length && token===m.token) {
         const item=candidates[next++];
         const geo=await findApt(item);
         if(token!==m.token) return;
-        if(geo) results.push(geo);
+        if (!geo) geocodeFailed++;
+        else if (geo.meters <= RADIUS_METERS) results.push(geo); // 10km 경계 포함
+        else outsideCount++;
         processed++;
-        setInfo(`아파트 주소 변환 중: ${processed}/${candidates.length}개 · 위치 확인 ${results.length}개`);
+        setInfo(`단지 위치 확인 ${processed}/${candidates.length} · 10km 이내 ${results.length}개 · 범위 밖 ${outsideCount}개 · 위치 미확인 ${geocodeFailed}개`);
       }
     }
     try {
+      // 모든 고유 단지를 검사합니다. 단, REST API 호출 폭주를 막기 위해 최대 3건씩 처리합니다.
       await Promise.all(Array.from({length:Math.min(3,candidates.length)},worker));
       if(token!==m.token) return;
       m.properties=results.sort((a,b)=>a.meters-b.meters);
       m.selected=null;renderAptList();drawPoints();
-      setInfo(`기준 주소에서 가까운 순으로 ${m.properties.length}개 단지를 표시했습니다. 단지를 클릭하면 차량·도보 경로를 조회합니다. 위치 불명확·검색 실패 ${candidates.length-m.properties.length}개.`);
+      const partial=Boolean(state.failed.length || geocodeFailed);
+      setInfo(`기준 주소 직선거리 10km 이내 ${m.properties.length}개 단지를 가까운 순으로 표시했습니다. 검사 ${processed}개 / 범위 밖 ${outsideCount}개 / 위치 미확인 ${geocodeFailed}개${state.failed.length?` / 거래 조회 실패 ${state.failed.length}개월`:''}. ${partial?'일부 단지는 제외 여부를 확정할 수 없습니다.':'단지를 선택하면 차량·도보 이동시간을 조회합니다.'}`,partial);
     } finally { if(token===m.token) $('map-apts-button').disabled=false; }
   }
   function routeValue(id,metric) {$(id).textContent=metric?.available ? `${metric.minutes}분` : '조회 불가';}

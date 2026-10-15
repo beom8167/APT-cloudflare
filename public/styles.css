@@ -46,3 +46,6 @@
 .map-footnote{margin:17px 0 0;font-size:11px;line-height:1.7;color:#94a3b3}
 @media(max-width:900px){.map-content{grid-template-columns:1fr}.map-sidebar{max-height:none}.map-apt-list{max-height:215px}.map-canvas{height:370px}}
 @media(max-width:620px){.map-panel{padding:19px 14px}.map-topbar{flex-direction:column;gap:7px}.map-search-bar{grid-template-columns:repeat(2,minmax(0,1fr))}.map-search-bar .field{grid-column:span 2}.map-canvas{height:285px}.map-info-badge{display:none}.distance-grid strong{font-size:13px}}
+
+/* v4: 10km radius boundary legend */
+.legend-dot.radius{background:rgba(78,157,230,.16);border:2px solid #2779cf;width:12px;height:12px;vertical-align:-3px}
