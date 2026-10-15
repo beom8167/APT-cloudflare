@@ -291,7 +291,7 @@ function exportCsv() {
 
 // Optional map extension: map features never change the official transaction data.
 const mapModule = (() => {
-  const RADIUS_METERS = 10_000; // 기준 주소와 아파트 사이의 직선거리 10km
+  const RADIUS_METERS = 3_000; // 기준 주소와 아파트 사이의 직선거리 3km
   const m = { origin:null, properties:[], map:null, originMarker:null, markers:[], routeLine:null,
     selected:null, route:null, token:0, sdkPromise:null, radiusCircle:null, geocodeCache:new Map(), routeCache:new Map() };
   const setInfo = (message, error=false) => {
@@ -356,7 +356,7 @@ const mapModule = (() => {
     clearMapPoints();
     m.originMarker?.setMap(null);
     m.originMarker = new window.kakao.maps.Marker({map:m.map,position:coord(m.origin.lat,m.origin.lng),image:imageFor('origin'),title:'기준 위치'});
-    // 기준 위치의 10km 검색 반경 원을 그립니다. 직선거리이며 실제 이동거리가 아닙니다.
+    // 기준 위치의 3km 검색 반경 원을 그립니다. 직선거리이며 실제 이동거리가 아닙니다.
     if (m.radiusCircle) m.radiusCircle.setMap(null);
     m.radiusCircle = new window.kakao.maps.Circle({
       map:m.map, center:coord(m.origin.lat,m.origin.lng), radius:RADIUS_METERS,
@@ -431,7 +431,7 @@ const mapModule = (() => {
   function renderAptList() {
     $('map-result-count').textContent=`${m.properties.length}개 단지`;
     if(!m.properties.length) {
-      $('map-apt-list').innerHTML='<div class="list-empty">조회된 거래 단지 중 직선거리 10km 이내로 확인된 아파트가 없습니다.<br />기준 주소와 조회 지역을 확인하세요.</div>';
+      $('map-apt-list').innerHTML='<div class="list-empty">조회된 거래 단지 중 직선거리 3km 이내로 확인된 아파트가 없습니다.<br />기준 주소와 조회 지역을 확인하세요.</div>';
       return;
     }
     $('map-apt-list').innerHTML=m.properties.map((r,i)=>`<button type="button" class="map-apt-item ${m.selected===i?'active':''}" data-apt-index="${i}"><span class="apt-rank">${i+1}</span><span class="apt-result-main"><span class="apt-result-name">${esc(r.name)}</span><span class="apt-result-sub">${esc(r.dong)} ${esc(r.jibun)} · ${r.quality==='지번 주소'?'지번 검색':'위치 확인 필요'}</span></span><span class="apt-result-distance">${formatDist(r.meters)}</span></button>`).join('');
@@ -449,17 +449,17 @@ const mapModule = (() => {
     const candidates=groupsForSearch();
     let next=0,processed=0,geocodeFailed=0,outsideCount=0;
     const results=[];
-    setInfo(`조회된 고유 단지 ${candidates.length}개의 위치를 확인하고 있습니다. 직선거리 10km 이내만 지도에 표시합니다…`);
+    setInfo(`조회된 고유 단지 ${candidates.length}개의 위치를 확인하고 있습니다. 직선거리 3km 이내만 지도에 표시합니다…`);
     async function worker() {
       while(next<candidates.length && token===m.token) {
         const item=candidates[next++];
         const geo=await findApt(item);
         if(token!==m.token) return;
         if (!geo) geocodeFailed++;
-        else if (geo.meters <= RADIUS_METERS) results.push(geo); // 10km 경계 포함
+        else if (geo.meters <= RADIUS_METERS) results.push(geo); // 3km 경계 포함
         else outsideCount++;
         processed++;
-        setInfo(`단지 위치 확인 ${processed}/${candidates.length} · 10km 이내 ${results.length}개 · 범위 밖 ${outsideCount}개 · 위치 미확인 ${geocodeFailed}개`);
+        setInfo(`단지 위치 확인 ${processed}/${candidates.length} · 3km 이내 ${results.length}개 · 범위 밖 ${outsideCount}개 · 위치 미확인 ${geocodeFailed}개`);
       }
     }
     try {
@@ -469,7 +469,7 @@ const mapModule = (() => {
       m.properties=results.sort((a,b)=>a.meters-b.meters);
       m.selected=null;renderAptList();drawPoints();
       const partial=Boolean(state.failed.length || geocodeFailed);
-      setInfo(`기준 주소 직선거리 10km 이내 ${m.properties.length}개 단지를 가까운 순으로 표시했습니다. 검사 ${processed}개 / 범위 밖 ${outsideCount}개 / 위치 미확인 ${geocodeFailed}개${state.failed.length?` / 거래 조회 실패 ${state.failed.length}개월`:''}. ${partial?'일부 단지는 제외 여부를 확정할 수 없습니다.':'단지를 선택하면 차량·도보 이동시간을 조회합니다.'}`,partial);
+      setInfo(`기준 주소 직선거리 3km 이내 ${m.properties.length}개 단지를 가까운 순으로 표시했습니다. 검사 ${processed}개 / 범위 밖 ${outsideCount}개 / 위치 미확인 ${geocodeFailed}개${state.failed.length?` / 거래 조회 실패 ${state.failed.length}개월`:''}. ${partial?'일부 단지는 제외 여부를 확정할 수 없습니다.':'단지를 선택하면 차량·도보 이동시간을 조회합니다.'}`,partial);
     } finally { if(token===m.token) $('map-apts-button').disabled=false; }
   }
   function routeValue(id,metric) {$(id).textContent=metric?.available ? `${metric.minutes}분` : '조회 불가';}
