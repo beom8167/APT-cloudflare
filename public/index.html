@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta name="description" content="국토교통부 공공데이터를 활용한 아파트 전월세 실거래가 조회 서비스" />
+  <title>아파트 전월세 실거래가 조회 | 국토교통부 공공데이터</title>
+  <link rel="stylesheet" href="/styles.css" />
+  <script defer src="/app.js"></script>
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="brand"><div class="brand-icon">⌂</div><div><div class="brand-name">APT DATA <span class="brand-lite">VIEWER</span></div><div class="brand-caption">아파트 전월세 실거래가 조회</div></div></div>
+      <a class="source-link" href="https://www.data.go.kr/data/15126474/openapi.do" target="_blank" rel="noopener noreferrer">공공데이터 원천 <span aria-hidden="true">↗</span></a>
+    </header>
+
+    <main>
+      <section class="hero" aria-labelledby="title">
+        <div class="hero-text">
+          <div class="eyebrow"><span class="live-dot"></span> 국토교통부 공식 오픈 API 연동</div>
+          <h1 id="title">아파트 전월세<br /><em>실거래 내역 조회</em></h1>
+          <p>시·도와 시·군·구, 조회기간을 선택하면 공개된 전월세 거래를 조회합니다.<br class="desktop-break" /> 단지·면적별 비교부터 CSV 저장까지 한 번에 확인하세요.</p>
+          <div class="hero-pills"><span>전국 시군구 조회</span><span>전세·월세 구분</span><span>계약일 기준 검색</span></div>
+        </div>
+        <div class="hero-art" aria-hidden="true">
+          <div class="tower tower-one"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+          <div class="tower tower-two"><i></i><i></i><i></i><i></i><i></i><i></i></div>
+          <div class="tower tower-three"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+          <div class="building-label"><span>●</span> OFFICIAL DATA</div>
+        </div>
+      </section>
+
+      <section class="panel search-panel" aria-labelledby="search-heading">
+        <div class="section-header"><div><div class="overline">SEARCH</div><h2 id="search-heading">거래 조건 검색</h2></div><span class="tip">필수: 지역 · 기간</span></div>
+        <form id="search-form">
+          <div class="form-grid primary-grid">
+            <label class="field"><span>시·도 <small>필수</small></span><select id="sido" required aria-label="시·도 선택">
+              <option value="서울특별시">서울특별시</option>
+              <option value="경기도">경기도</option>
+              <option value="인천광역시">인천광역시</option>
+              <option value="대전광역시">대전광역시</option>
+              <option value="세종특별자치시">세종특별자치시</option>
+              <option value="부산광역시">부산광역시</option>
+              <option value="대구광역시">대구광역시</option>
+              <option value="충청북도">충청북도</option>
+              <option value="__manual__">기타 지역 (코드 직접 입력)</option>
+            </select></label>
+            <label class="field"><span>시·군·구 <small>필수</small></span><select id="sigungu" required aria-label="시·군·구 선택"></select></label>
+            <label class="field"><span>조회 기간</span><select id="period">
+              <option value="1">최근 1개월</option>
+              <option value="3">최근 3개월</option>
+              <option value="6" selected>최근 6개월</option>
+              <option value="12">최근 12개월</option>
+              <option value="custom">직접 기간 지정</option>
+            </select></label>
+            <div class="field"><span>현재 조회 범위</span><div id="criteria-summary" class="criteria-summary" aria-live="polite">서울특별시 강남구 · 최근 6개월 · 아파트 전체</div></div>
+          </div>
+          <div id="manual-code-area" class="manual-code-area" hidden>
+            <label class="field"><span>시군구 법정동코드 5자리 <a class="help" href="https://www.code.go.kr/stdcode/regCodeL.do?menuNo=101010100010" target="_blank" rel="noopener noreferrer">코드 확인 ↗</a></span><input id="lawd-cd" type="text" inputmode="numeric" maxlength="5" pattern="[0-9]{5}" placeholder="예: 강남구 11680" value="" /></label>
+            <p>목록에 없는 지역은 법정동코드의 앞 5자리를 입력하면 전국 시군구를 조회할 수 있습니다.</p>
+          </div>
+          <div id="custom-period-area" class="form-grid custom-period-grid" hidden>
+            <label class="field"><span>시작 계약월</span><input id="start-month" type="month" required /></label>
+            <label class="field"><span>종료 계약월</span><input id="end-month" type="month" required /></label>
+          </div>
+          <div class="form-grid secondary-grid">
+            <label class="field"><span>아파트명 포함 검색 <small>선택</small></span><input id="apt-name" type="text" maxlength="80" placeholder="예: 래미안, 자이" /></label>
+            <label class="field"><span>전용면적 기준(㎡) <small>선택</small></span><input id="area" type="number" step="0.01" min="0" max="1000" placeholder="예: 84" /></label>
+            <label class="field"><span>면적 허용오차(㎡)</span><select id="tolerance"><option value="1">± 1㎡</option><option value="3" selected>± 3㎡</option><option value="5">± 5㎡</option><option value="10">± 10㎡</option></select></label>
+            <label class="field"><span>거래유형</span><select id="deal-type"><option value="all">전체 거래</option><option value="jeonse">전세</option><option value="wolse">월세</option></select></label>
+          </div>
+          <div class="form-actions"><div class="search-hint">기본값: 서울특별시 강남구 · 아파트 전체 · 최근 6개월(당월 포함). 최대 12개월.</div><div class="action-buttons"><button type="button" id="reset-button" class="button secondary">초기화</button><button id="search-button" class="button primary" type="submit"><span class="button-icon">⌕</span> 실거래가 조회</button></div></div>
+        </form>
+      </section>
+
+      <div id="notification" class="notification" role="status" aria-live="polite" hidden></div>
+      <section class="dashboard" aria-label="조회 현황">
+        <div class="stat"><div class="stat-label">조회된 거래 건수</div><div class="stat-number" id="stat-all">—</div><div class="stat-foot">선택 조건에 해당하는 거래</div></div>
+        <div class="stat"><div class="stat-label">전세 거래</div><div class="stat-number" id="stat-jeonse">—</div><div class="stat-foot">월세 0만원 기준</div></div>
+        <div class="stat"><div class="stat-label">월세 거래</div><div class="stat-number" id="stat-wolse">—</div><div class="stat-foot">월세가 있는 거래</div></div>
+        <div class="stat emphasis"><div class="stat-label">전세 보증금 중앙값 <span class="info-tip" title="현재 필터에 해당하는 전세 거래의 보증금 중앙값입니다. 동일 단지·면적의 시세를 뜻하지는 않습니다.">ⓘ</span></div><div class="stat-number" id="stat-median">—</div><div class="stat-foot">단위: 만원 · 면적 혼합 시 주의</div></div>
+      </section>
+
+      <section class="panel results-panel" aria-labelledby="results-heading">
+        <div class="results-heading"><div><div class="overline">TRANSACTIONS</div><h2 id="results-heading">전월세 실거래 상세 내역</h2><p id="results-subtitle" class="results-subtitle">조건을 선택하고 조회 버튼을 눌러주세요.</p></div><div class="result-actions"><button class="button secondary small" id="download-button" disabled>↓ CSV 다운로드</button></div></div>
+        <div id="progress-area" class="progress-area" hidden><div class="progress-caption"><span id="progress-caption">조회 중…</span><span id="progress-count">0 / 0개월</span></div><div class="progress-track"><div id="progress-fill" class="progress-fill" style="width:0%"></div></div></div>
+        <div class="table-scroll"><table><thead><tr><th>계약일</th><th>아파트명 / 법정동</th><th class="numeric">전용면적</th><th class="numeric">층</th><th>구분</th><th class="numeric">보증금(만원)</th><th class="numeric">월세(만원)</th><th>계약유형</th><th>건축연도</th></tr></thead><tbody id="results-body"><tr class="empty-row"><td colspan="9"><div class="empty-icon">⌕</div><strong>아직 조회된 내역이 없습니다</strong><p>시·도 / 시·군·구와 기간을 선택해 조회해 주세요.</p></td></tr></tbody></table></div>
+        <div class="result-footer"><span id="page-info">조회 전</span><div class="pagination"><button type="button" id="previous-page" class="page-button" disabled>← 이전</button><span id="page-number">—</span><button type="button" id="next-page" class="page-button" disabled>다음 →</button></div></div>
+      </section>
+
+      <footer class="footer"><div>자료 출처: <a href="https://www.data.go.kr/data/15126474/openapi.do" target="_blank" rel="noopener noreferrer">국토교통부 · 아파트 전월세 실거래가 자료</a></div><div>실거래 공개자료는 신고·확정일자 자료를 바탕으로 하며 공개 시차가 있을 수 있습니다. 현재 호가 및 KB부동산 시세가 아닙니다.</div><div>거래단위: 보증금·월세 <b>만원</b> / 전용면적 <b>㎡</b> · 제공 범위: 아파트(오피스텔·연립주택 제외)</div></footer>
+    </main>
+  </div>
+</body>
+</html>
